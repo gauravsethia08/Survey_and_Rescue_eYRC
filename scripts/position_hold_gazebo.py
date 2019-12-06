@@ -28,6 +28,7 @@ from pid_tune.msg import PidTune
 import rospy
 import time
 
+i = 0 
 
 class Edrone():
 	"""docstring for Edrone"""
@@ -40,9 +41,12 @@ class Edrone():
 		self.drone_position = [0.0,0.0,0.0]	
 
 		# [x_setpoint, y_setpoint, z_setpoint]
-		self.setpoint = [2,2,20] # whycon marker at the position of the dummy given in the scene. Make the whycon marker associated with position_to_hold dummy renderable and make changes accordingly
-
-
+		self.setpoint = [2,2,20] 
+		# whycon marker at the position of the dummy given in the scene. Make the whycon marker associated with position_to_hold dummy renderable and make changes accordingly
+		
+		#List of all the way points
+		self.waypoint = [[0.2, 0, 23], [3.5, -3.3, 23], [-4.4, -4.6, 20.7], [-6.0, 6.3, 18.3], [5, 5.3, 16.3]]	
+			
 		#Declaring a cmd of message type edrone_msgs and initializing values
 		self.cmd = edrone_msgs()
 		self.cmd.rcRoll = 1500
@@ -54,64 +58,55 @@ class Edrone():
 		self.cmd.rcAUX3 = 1500
 		self.cmd.rcAUX4 = 1500
 
-
 		#initial setting of Kp, Kd and ki for [roll, pitch, throttle]. eg: self.Kp[2] corresponds to Kp value in throttle axis
 		#after tuning and computing corresponding PID parameters, change the parameters
-		self.Kp = [0,0,0]
+		self.Kp = [16.5,20,14.82]
 		self.Ki = [0,0,0]
-		self.Kd = [0,0,0]
-
+		self.Kd = [345.3,355.3,376.3]
 
 		#-----------------------Add other required variables for pid here ----------------------------------------------
 
+		self.prev_error = [0,0,0]
+		self.max_values = [2000,2000,2000]
+		self.min_values = [1000,1000,1000]
+		self.error_sum = [0,0,0]
+		self.result = [0,0,0]
+		
+		self.out_alt = 0
+		self.out_pitch = 0
+		self.out_roll = 0
 
-
-
-
-
-
-
-		# Hint : Add variables for storing previous errors in each axis, like self.prev_values = [0,0,0] where corresponds to [pitch, roll, throttle]		#		 Add variables for limiting the values like self.max_values = [2000,2000,2000] corresponding to [roll, pitch, throttle]
-		#													self.min_values = [1000,1000,1000] corresponding to [pitch, roll, throttle]
-		#																	You can change the upper limit and lower limit accordingly. 
+		# Hint : Add variables for storing previous errors in each axis, like self.prev_values = [0,0,0] where corresponds to [pitch, roll, throttle]		
+		# Add variables for limiting the values like self.max_values = [2000,2000,2000] corresponding to [roll, pitch, throttle]
+		# self.min_values = [1000,1000,1000] corresponding to [pitch, roll, throttle]
+		# You can change the upper limit and lower limit accordingly. 
 		#----------------------------------------------------------------------------------------------------------
 
 		# # This is the sample time in which you need to run pid. Choose any time which you seem fit. Remember the stimulation step time is 50 ms
-		# self.sample_time = 0.060 # in seconds
-
-
-
-
-
-
+		self.sample_time = 0.060 # in seconds
 
 		# Publishing /drone_command, /alt_error, /pitch_error, /roll_error
 		self.command_pub = rospy.Publisher('/drone_command', edrone_msgs, queue_size=1)
 		#------------------------Add other ROS Publishers here-----------------------------------------------------
 
-
-
-
-
-
+		self.alt_error_pub = rospy.Publisher('/alt_error', Float64, queue_size=10)
+		self.pitch_error_pub = rospy.Publisher('/pitch_error', Float64, queue_size=10)
+		self.roll_error_pub = rospy.Publisher('/roll_error', Float64, queue_size=10)
 
 		#-----------------------------------------------------------------------------------------------------------
-
 
 		# Subscribing to /whycon/poses, /pid_tuning_altitude, /pid_tuning_pitch, pid_tuning_roll
 		rospy.Subscriber('whycon/poses', PoseArray, self.whycon_callback)
 		rospy.Subscriber('/pid_tuning_altitude',PidTune,self.altitude_set_pid)
 		#-------------------------Add other ROS Subscribers here----------------------------------------------------
-
-
-
-
-
+		
+		rospy.Subscriber('/pid_tuning_pitch',PidTune,self.pitch_set_pid)
+		rospy.Subscriber('/pid_tuning_roll',PidTune,self.roll_set_pid)
 
 		#------------------------------------------------------------------------------------------------------------
 
 		self.arm() # ARMING THE DRONE
-
+		
 
 	# Disarming condition of the drone
 	def disarm(self):
@@ -132,8 +127,7 @@ class Edrone():
 		self.cmd.rcAUX4 = 1500
 		self.command_pub.publish(self.cmd)	# Publishing /drone_command
 		rospy.sleep(1)
-
-
+		
 
 	# Whycon callback function
 	# The function gets executed each time when /whycon node publishes /whycon/poses 
@@ -142,15 +136,35 @@ class Edrone():
 
 		#--------------------Set the remaining co-ordinates of the drone from msg----------------------------------------------
 
-
-
-
-
+		self.drone_position[1] = msg.poses[0].position.y
+		self.drone_position[2] = msg.poses[0].position.z
 		
 		#---------------------------------------------------------------------------------------------------------------
 
-
-
+	
+	#Checking if the position is reached or not, by checking the error 
+	def checkpost(self,error):
+		
+		if error[0] < 0.2 and  error[0] >-0.2 and error[1] < 0.2 and  error[1] >-0.2 and error[2] < 0.5 and  error[2] >-0.5:
+			
+			self.result[0] += 1
+			self.result[1] += 1
+			self.result[2] += 1
+			
+			if self.result[0] <= 4:
+				print("Reached Level {}".format(self.result[0]))
+			
+			if self.result[0] == 5:
+				print("Reached Goal")
+				
+			
+		if self.result[0] <= 4:
+			return(self.result[0])
+		
+		else:
+			return(4)
+			
+	
 	# Callback function for /pid_tuning_altitude
 	# This function gets executed each time when /tune_pid publishes /pid_tuning_altitude
 	def altitude_set_pid(self,alt):
@@ -160,26 +174,22 @@ class Edrone():
 
 	#----------------------------Define callback function like altitide_set_pid to tune pitch, roll--------------
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+	
+	def pitch_set_pid(self,pitch):
+		self.Kp[1] = pitch.Kp * 0.06 # This is just for an example. You can change the ratio/fraction value accordingly
+		self.Ki[1] = pitch.Ki * 0.008
+		self.Kd[1] = pitch.Kd * 0.3
+		
+	
+	def roll_set_pid(self,roll):
+		self.Kp[0] = roll.Kp * 0.06 # This is just for an example. You can change the ratio/fraction value accordingly
+		self.Ki[0] = roll.Ki * 0.008
+		self.Kd[0] = roll.Kd * 0.3
 
 	#----------------------------------------------------------------------------------------------------------------------
 
-
+	i = 0
+	
 	def pid(self):
 	#-----------------------------Write the PID algorithm here--------------------------------------------------------------
 
@@ -189,32 +199,90 @@ class Edrone():
 	#	3. Calculate the pid output required for each axis. For eg: calcuate self.out_roll, self.out_pitch, etc.
 	#	4. Reduce or add this computed output value on the avg value ie 1500. For eg: self.cmd.rcRoll = 1500 + self.out_roll. LOOK OUT FOR SIGN (+ or -). EXPERIMENT AND FIND THE CORRECT SIGN
 	#	5. Don't run the pid continously. Run the pid only at the a sample time. self.sampletime defined above is for this purpose. THIS IS VERY IMPORTANT.
-	#	6. Limit the output value and the final command value between the maximum(2000) and minimum(1000)range before publishing. For eg : if self.cmd.rcPitch > self.max_values[1]:
-	#																														self.cmd.rcPitch = self.max_values[1]
+	#    	6. Limit the output value and the final command value between the maximum(2000) and minimum(1000)range before publishing. For eg : if self.cmd.rcPitch > self.max_values[1]:
+	#	self.cmd.rcPitch = self.max_values[1]
 	#	7. Update previous errors.eg: self.prev_error[1] = error[1] where index 1 corresponds to that of pitch (eg)
 	#	8. Add error_sum
-
-
-
-
-
-
-
-
-
-	#------------------------------------------------------------------------------------------------------------------------
-
-
 		
-		self.command_pub.publish(self.cmd)
+		self.zero_line = 0.00
+		self.now = time.time()
+		self.last_time = 0
+		self.time_change = self.now - self.last_time
+		global i
 
+		if(self.time_change>0.050):
+		
+			#Step 1 - Calculating the error 
+			self.roll_error = self.drone_position[0] - self.waypoint[i][0]
+			self.pitch_error = self.drone_position[1] - self.waypoint[i][1]
+			self.alt_error = self.drone_position[2] - self.waypoint[i][2]
+			
+			#Publishing errors
+			self.roll_error_pub.publish(self.roll_error)
+			self.pitch_error_pub.publish(self.pitch_error)
+			self.alt_error_pub.publish(self.alt_error)
+	
+			#Step 2- Computing error, change_in_error
+			self.error = [self.roll_error, self.pitch_error, self.alt_error]
+			self.change_in_error = [self.error[0] - self.prev_error[0], self.error[1] - self.prev_error[1], self.error[2] - self.prev_error[2]]
+	
+			#Step 3 - Calculating PID output, using the equation 
+			# output = (kp * error) + Iterm + (Kd * errro-prev_error)
+			self.out_roll  = (self.Kp[0] * self.error[0]) + (self.Ki[0] * self.error_sum[0]) + (self.Kd[0] * self.change_in_error[0])
+			self.out_pitch  = (self.Kp[1] * self.error[1]) + (self.Ki[1] * self.error_sum[0]) + (self.Kd[1] * self.change_in_error[1])
+			self.out_alt  = (self.Kp[2] * self.error[2]) + (self.Ki[2] * self.error_sum[2]) + (self.Kd[2] * self.change_in_error[2])
+	
+			#Step 4 - Reducing the output
+			self.cmd.rcPitch = 1500 + self.out_pitch
+			self.cmd.rcRoll = 1500 - self.out_roll
+			self.cmd.rcThrottle = 1500 + self.out_alt
+
+			#Step 5 - Limiting the oyutput
+			#Limiting Roll
+			if self.cmd.rcRoll > self.max_values[0]:
+				self.cmd.rcRoll = self.max_values[0]
+				
+			elif self.cmd.rcRoll < self.min_values[0]:
+				self.cmd.rcRoll = self.min_values[0]
+
+			#Limiting Pitch
+			if self.cmd.rcPitch > self.max_values[1]:
+				self.cmd.rcPitch = self.max_values[1]
+				
+			elif self.cmd.rcPitch < self.min_values[1]:
+				self.cmd.rcPitch = self.min_values[1]
+		
+			#Limiting Throttle
+			if self.cmd.rcThrottle > self.max_values[2]:
+				self.cmd.rcThrottle = self.max_values[2]
+				
+			elif self.cmd.rcThrottle < self.min_values[2]:
+				self.cmd.rcThrottle = self.min_values[2]
+		
+	
+			#Step 8 - Calculating error sum	
+			self.error_sum[0] = self.error_sum[0] + self.error[0]
+			self.error_sum[1] = self.error_sum[1] + self.error[1]
+			self.error_sum[2] = self.error_sum[2] + self.error[2]
+	
+			#Step 7 - Updating prev_error
+			self.prev_error = self.error
+			#------------------------------------------------------------------------------------------------------------------------
+			
+			i = self.checkpost(self.error)
+			if i > 4:
+				i = 4
+						
+			self.command_pub.publish(self.cmd)
+			
+			rospy.sleep(self.sample_time)
 
 
 
 if __name__ == '__main__':
 
 	e_drone = Edrone()
-	r = rospy.Rate() #specify rate in Hz based upon your desired PID sampling time, i.e. if desired sample time is 33ms specify rate as 30Hz
+	#r = rospy.Rate(30) #specify rate in Hz based upon your desired PID sampling time, i.e. if desired sample time is 33ms specify rate as 30Hz
 	while not rospy.is_shutdown():
 		e_drone.pid()
-		r.sleep()
+		#r.sleep()
